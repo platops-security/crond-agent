@@ -61,6 +61,9 @@ nfpms:
 # against — the `install:` directive uses formula-style DSL.
 homebrew_casks:
   - name: crond-agent
+    # "auto" skips the tap update for prereleases and snapshots, so an
+    # -rc/-beta tag never repoints `brew install` at a pre-release build.
+    skip_upload: "auto"
     repository:
       owner: platops-security
       name: homebrew-tap
