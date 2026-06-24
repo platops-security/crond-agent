@@ -88,6 +88,9 @@ jobs:
       - name: Attest build provenance for release artifacts
         # SLSA provenance for the downloadable binaries + packages. The
         # container image is separately cosign-signed (docker_signs).
+        # GitHub's free attestation storage requires a public repo (or a paid
+        # org plan), so skip on private repos rather than fail the release.
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
           subject-path: |

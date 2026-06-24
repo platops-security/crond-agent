@@ -138,6 +138,11 @@ dockers_v2:
       org.opencontainers.image.revision: "{{ .FullCommit }}"
       org.opencontainers.image.created: "{{ .Date }}"
 
+release:
+  # Mark -rc/-beta/-alpha tags as GitHub prereleases (mirrors the cask's
+  # skip_upload: auto), so a release-candidate is never shown as "Latest".
+  prerelease: auto
+
 changelog:
   sort: asc
   filters:
