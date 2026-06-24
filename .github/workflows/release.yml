@@ -26,9 +26,12 @@ jobs:
         run: |
           set -euo pipefail
           # Reject misformed tags before goreleaser burns minutes building.
-          # Accept v<major>.<minor>.<patch> with optional -prerelease and +build.
-          if ! echo "$REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
-            echo "::error::tag '$REF_NAME' is not valid semver (expected vX.Y.Z[-pre][+build])"
+          # Accept v<major>.<minor>.<patch> with optional -prerelease. No +build
+          # metadata: install.sh resolves only plain vX.Y.Z tags and goreleaser
+          # artifact filenames don't carry build metadata, so a +build tag would
+          # be unreachable by the installer — reject it at the source instead.
+          if ! echo "$REF_NAME" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag '$REF_NAME' is not valid semver (expected vX.Y.Z[-pre])"
             exit 1
           fi
           # Tag must be reachable from main — guards against tagging a fork or
