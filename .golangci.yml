@@ -1,27 +1,40 @@
-# golangci-lint config for crond-agent. Keep narrow — we want fast feedback
-# on real bugs, not bikesheds on naming/format style (gofmt handles that).
+# golangci-lint config (schema v2). Keep narrow — real bugs over style
+# bikeshedding (gofmt handles formatting). gosec gives security coverage.
+version: "2"
 run:
-  timeout: 5m
   modules-download-mode: readonly
-
 linters:
-  disable-all: true
+  default: none
   enable:
-    - errcheck      # unchecked errors
-    - govet         # vet
-    - staticcheck   # broad static analysis
-    - ineffassign   # ineffective assignments
-    - unused        # unused symbols
-    - gosimple      # simplifications
-    - gosec         # security
-    - bodyclose     # http response body not closed
-    - rowserrcheck  # sql rows.Err not checked
+    - bodyclose
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
     - misspell
-
-issues:
-  exclude-rules:
-    # Test files: relax errcheck and gosec — t.Fatal handles most failures.
-    - path: _test\.go
-      linters:
-        - errcheck
-        - gosec
+    - rowserrcheck
+    - staticcheck
+    - unused
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
