@@ -448,3 +448,60 @@ func TestSendNetworkErrorRetriesThenFails(t *testing.T) {
 		t.Fatal("expected a network error after retries are exhausted")
 	}
 }
+
+// TestSendEscapesKeyInPath verifies the ping key is percent-encoded into the
+// request path so an unusual value cannot inject a query string or extra path
+// segment.
+func TestSendEscapesKeyInPath(t *testing.T) {
+	var escapedPath, rawQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		escapedPath = r.URL.EscapedPath()
+		rawQuery = r.URL.RawQuery
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := newTestConfig()
+	cfg.APIURL = server.URL
+	client, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	// Space proves escaping happened; the '?' must not start a query string.
+	if err := client.Send(context.Background(), "abc def?evil=1", "", nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if rawQuery != "" {
+		t.Errorf("'?' in key must not open a query string, got RawQuery=%q", rawQuery)
+	}
+	if !strings.Contains(escapedPath, "%20") {
+		t.Errorf("space in key must be percent-encoded, got path %q", escapedPath)
+	}
+}
+
+// TestSendUUIDKeyUnchanged confirms a normal UUID key passes through the
+// escaping untouched (no behavior change for valid keys).
+func TestSendUUIDKeyUnchanged(t *testing.T) {
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	cfg := newTestConfig()
+	cfg.APIURL = server.URL
+	client, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	const uuid = "550e8400-e29b-41d4-a716-446655440000"
+	if err := client.Send(context.Background(), uuid, "", nil); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if gotPath != "/ping/"+uuid {
+		t.Errorf("valid UUID key should be unchanged in path, got %q", gotPath)
+	}
+}

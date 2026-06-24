@@ -87,7 +87,11 @@ func RunWithOptions(ctx context.Context, args []string, timeout time.Duration, m
 		return nil, fmt.Errorf("no command specified")
 	}
 
-	logger.Info("exec start", "command", args[0], "args", args[1:], "timeout", timeout)
+	// Redact secrets from the logged command line using the same patterns
+	// applied to captured output. The child still runs the original args; only
+	// the agent's own log view is masked.
+	logArgs := redactArgsForLog(args, opts.RedactPatterns)
+	logger.Info("exec start", "command", logArgs[0], "args", logArgs[1:], "timeout", timeout)
 
 	// We manage cancellation manually instead of exec.CommandContext so we
 	// can send SIGTERM first and allow a grace period before SIGKILL.

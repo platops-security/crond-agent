@@ -85,3 +85,28 @@ func (r *streamingRedactWriter) redact(b []byte) []byte {
 	}
 	return b
 }
+
+// redactArgsForLog applies the configured redact patterns to each command
+// argument so a secret passed on the wrapped command line (e.g. a token in
+// `curl -H "Authorization: Bearer …"` or `mysql --password=…`) is not written
+// verbatim to the agent's own structured logs.
+//
+// This mirrors the redaction applied to captured output: the same operator
+// patterns that scrub stdout/stderr also scrub the logged command line. The
+// returned slice is a copy — the child process still receives the original,
+// unredacted args; only the log view is masked. With no patterns configured
+// the input slice is returned unchanged (zero overhead).
+func redactArgsForLog(args []string, patterns []*regexp.Regexp) []string {
+	if len(patterns) == 0 {
+		return args
+	}
+	out := make([]string, len(args))
+	for i, a := range args {
+		b := []byte(a)
+		for _, re := range patterns {
+			b = re.ReplaceAll(b, redactPlaceholder)
+		}
+		out[i] = string(b)
+	}
+	return out
+}

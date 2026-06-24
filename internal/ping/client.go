@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -58,12 +59,15 @@ func NewClient(cfg *config.Config, version string, logger *slog.Logger) (*Client
 
 // Send posts a ping for the given key. kind can be "", "start", "success", or "fail".
 func (c *Client) Send(ctx context.Context, key, kind string, body []byte) error {
-	url := fmt.Sprintf("%s/ping/%s", c.baseURL, key)
+	// PathEscape the key so an unusual value can't alter the request path
+	// (inject an extra segment, a query, or traversal). Valid UUID keys pass
+	// through unchanged; kind is a fixed internal value and needs no escaping.
+	endpoint := fmt.Sprintf("%s/ping/%s", c.baseURL, url.PathEscape(key))
 	if kind != "" && kind != "success" {
-		url += "/" + kind
+		endpoint += "/" + kind
 	}
 
-	return c.sendWithRetry(ctx, url, body)
+	return c.sendWithRetry(ctx, endpoint, body)
 }
 
 // sendWithRetry performs the HTTP POST with exponential backoff on retryable errors.
