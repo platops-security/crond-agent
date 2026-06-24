@@ -5,12 +5,12 @@ type: application
 
 # Chart SemVer — independent of agent image SemVer below. Bumps when the
 # chart's templates, defaults, or rendered YAML shape change.
-version: 0.2.0
+version: 0.3.0
 
 # appVersion tracks the agent container image tag this chart's defaults
 # target. Update together with values.yaml:image.tag when bumping the
 # pinned agent version.
-appVersion: "0.2.0"
+appVersion: "0.3.0"
 
 kubeVersion: ">=1.25.0-0"
 
