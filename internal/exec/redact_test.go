@@ -3,6 +3,7 @@ package exec
 import (
 	"bytes"
 	"context"
+	"io"
 	"regexp"
 	"strings"
 	"testing"
@@ -121,5 +122,95 @@ func TestRunWithOptions_RedactionAppliedBeforeCap(t *testing.T) {
 	}
 	if strings.Contains(r.Stdout, "abc123def456ghi789") {
 		t.Errorf("stdout should NOT contain the secret value, got %q", r.Stdout)
+	}
+}
+
+// failingWriter fails its Write once call count reaches failAt, so the
+// error-propagation paths in streamingRedactWriter.Write can be exercised.
+type failingWriter struct {
+	calls  int
+	failAt int
+}
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	f.calls++
+	if f.calls >= f.failAt {
+		return 0, io.ErrClosedPipe
+	}
+	return len(p), nil
+}
+
+// TestStreamingRedactWriter_WriteErrorOnNewlineFlushPropagates ensures a dst
+// write error on the complete-line flush is surfaced to the caller rather than
+// swallowed (the runner relies on io errors to detect a broken capture sink).
+func TestStreamingRedactWriter_WriteErrorOnNewlineFlushPropagates(t *testing.T) {
+	w := newStreamingRedactWriter(&failingWriter{failAt: 1}, []*regexp.Regexp{
+		regexp.MustCompile(`secret`),
+	}, 0)
+	n, err := w.Write([]byte("line with secret\n"))
+	if err == nil {
+		t.Fatal("expected dst.Write error to propagate on newline flush")
+	}
+	if n != 0 {
+		t.Errorf("on error want n=0 (Go io.Writer contract), got %d", n)
+	}
+}
+
+// TestStreamingRedactWriter_WriteErrorOnForceFlushPropagates covers the
+// memory-bound force-flush branch: when a newline-free stream exceeds
+// maxBuffer, the partial is pushed through dst and any error must propagate.
+func TestStreamingRedactWriter_WriteErrorOnForceFlushPropagates(t *testing.T) {
+	const maxBuffer = 8
+	w := newStreamingRedactWriter(&failingWriter{failAt: 1}, []*regexp.Regexp{
+		regexp.MustCompile(`secret`),
+	}, maxBuffer)
+	// 10 bytes, no newline → exceeds maxBuffer → force-flush path.
+	if _, err := w.Write([]byte("0123456789")); err == nil {
+		t.Fatal("expected dst.Write error to propagate on force-flush")
+	}
+}
+
+// TestStreamingRedactWriter_SecretSplitAcrossManyWrites strengthens the core
+// streaming guarantee: a single-line secret delivered one byte per Write (the
+// adversarial fragmentation case) is still fully redacted once the line
+// completes, with no prefix leaking to dst before the newline arrives.
+func TestStreamingRedactWriter_SecretSplitAcrossManyWrites(t *testing.T) {
+	var sink bytes.Buffer
+	w := newStreamingRedactWriter(&sink, []*regexp.Regexp{
+		regexp.MustCompile(`password=\S+`),
+	}, 0)
+
+	line := "log password=hunter2swordfish done\n"
+	for i := 0; i < len(line); i++ {
+		if _, err := w.Write([]byte{line[i]}); err != nil {
+			t.Fatalf("Write byte %d: %v", i, err)
+		}
+		// Until the newline lands, nothing may be forwarded — otherwise a
+		// secret prefix could leak ahead of the regex seeing the full token.
+		if i < len(line)-1 && sink.Len() != 0 {
+			t.Fatalf("byte %d forwarded a partial line early: %q", i, sink.String())
+		}
+	}
+	got := sink.String()
+	if strings.Contains(got, "hunter2swordfish") {
+		t.Errorf("secret leaked across fragmented writes: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Errorf("expected [REDACTED], got %q", got)
+	}
+}
+
+// TestStreamingRedactWriter_CloseOnEmptyBufferIsNoop covers the empty-buffer
+// early return in Close (idempotent flush after all data already forwarded).
+func TestStreamingRedactWriter_CloseOnEmptyBufferIsNoop(t *testing.T) {
+	var sink bytes.Buffer
+	w := newStreamingRedactWriter(&sink, []*regexp.Regexp{
+		regexp.MustCompile(`x`),
+	}, 0).(*streamingRedactWriter)
+	if _, err := w.Write([]byte("clean line\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := w.Close(); err != nil { // buffer already empty after the newline flush
+		t.Fatalf("Close on empty buffer should be a no-op, got %v", err)
 	}
 }

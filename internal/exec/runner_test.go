@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -407,4 +408,122 @@ func TestCappedWriter(t *testing.T) {
 			t.Errorf("got %q, want 'abc'", w.String())
 		}
 	})
+
+	t.Run("exactly full then another write trips truncation", func(t *testing.T) {
+		w := &cappedWriter{max: 5}
+		w.Write([]byte("12345")) // fills to max, not yet truncated
+		if w.truncated {
+			t.Fatal("should not be truncated after an exact fill")
+		}
+		n, err := w.Write([]byte("x")) // remaining == 0 → discard + mark truncated
+		if n != 1 || err != nil {
+			t.Errorf("write when full: n=%d err=%v, want n=1 err=nil", n, err)
+		}
+		if w.String() != "12345" || !w.truncated {
+			t.Errorf("got %q truncated=%v, want '12345' truncated=true", w.String(), w.truncated)
+		}
+	})
+}
+
+// TestRunContextCancellationTerminatesChild verifies the parent-context-cancel
+// path: cancelling the context the runner was given must SIGTERM the child
+// process group (not orphan it), exercising the `<-ctxDone` branch of
+// waitWithGracefulTermination that timeout-based tests do not reach.
+func TestRunContextCancellationTerminatesChild(t *testing.T) {
+	logger := newTestLogger()
+
+	tmp, err := os.CreateTemp("", "runner-ctx-*.marker")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	tmp.Close()
+	defer os.Remove(tmp.Name())
+
+	script := `
+		trap 'echo term > "$1"; exit 0' TERM
+		sleep 30 &
+		wait $!
+	`
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan *Result, 1)
+	go func() {
+		r, _ := Run(ctx, []string{"sh", "-c", script, "sh", tmp.Name()}, 0, 4096, logger)
+		resultCh <- r
+	}()
+
+	// Let the child install its trap, then cancel the parent context.
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case r := <-resultCh:
+		if r == nil {
+			t.Fatal("expected non-nil result")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Run did not return after context cancellation — child not signalled")
+	}
+
+	data, err := os.ReadFile(tmp.Name())
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if !strings.Contains(string(data), "term") {
+		t.Errorf("marker = %q, expected child trap to fire on ctx-cancel SIGTERM", string(data))
+	}
+}
+
+// TestRunSIGKILLAfterGraceKillsStubbornChild exercises the escalation path: a
+// child that ignores SIGTERM must be SIGKILLed once the grace period elapses,
+// yielding exit code 137 (128+SIGKILL). gracePeriod is shortened so the test
+// does not wait the production 10s.
+func TestRunSIGKILLAfterGraceKillsStubbornChild(t *testing.T) {
+	oldGrace := gracePeriod
+	gracePeriod = 300 * time.Millisecond
+	defer func() { gracePeriod = oldGrace }()
+
+	logger := newTestLogger()
+
+	// Shell ignores SIGTERM and keeps looping; only SIGKILL to the process
+	// group can stop it. Short inner sleeps die on the forwarded SIGTERM but
+	// the trapped shell survives until the grace-period SIGKILL.
+	script := `trap '' TERM; while true; do sleep 0.1; done`
+
+	start := time.Now()
+	result, err := Run(context.Background(),
+		[]string{"sh", "-c", script},
+		200*time.Millisecond, // timeout fires first, then grace, then SIGKILL
+		1024, logger,
+	)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if want := 128 + int(syscall.SIGKILL); result.ExitCode != want {
+		t.Errorf("exit code = %d, want %d (SIGKILL after grace)", result.ExitCode, want)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Run took %v — SIGKILL escalation appears not to have fired", elapsed)
+	}
+}
+
+// TestRunWithOptions_RedactsTrailingPartialNoNewline verifies the post-Wait
+// flush redacts a held partial line: a secret printed with no trailing newline
+// must still be scrubbed from the captured payload (the flushRedactor path).
+func TestRunWithOptions_RedactsTrailingPartialNoNewline(t *testing.T) {
+	logger := newTestLogger()
+	r, err := RunWithOptions(context.Background(),
+		[]string{"sh", "-c", `printf 'token=abcdef123456'`}, // no trailing newline
+		5*time.Second, 4096, Options{
+			RedactPatterns: []*regexp.Regexp{regexp.MustCompile(`token=\S+`)},
+		}, logger,
+	)
+	if err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+	if strings.Contains(r.Stdout, "abcdef123456") {
+		t.Errorf("trailing partial secret was not redacted: %q", r.Stdout)
+	}
+	if !strings.Contains(r.Stdout, "[REDACTED]") {
+		t.Errorf("expected [REDACTED] in flushed partial, got %q", r.Stdout)
+	}
 }

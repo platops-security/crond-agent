@@ -3,10 +3,19 @@ package ping
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -293,5 +302,149 @@ func TestNewClientWithInvalidCACert(t *testing.T) {
 	_, err := NewClient(cfg, "1.0.0", logger)
 	if err == nil {
 		t.Fatal("expected error for nonexistent CA cert")
+	}
+}
+
+// writeTestCACert generates a throwaway self-signed CA and writes it as PEM,
+// returning the file path. Used to exercise the custom-CA-pool success path.
+func writeTestCACert(t *testing.T) string {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "crond-agent-test-ca"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		IsCA:                  true,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	return path
+}
+
+// TestNewClientWithValidCACert covers the buildTLSConfig success branch where a
+// well-formed CA is loaded into a custom RootCAs pool (cert pinning).
+func TestNewClientWithValidCACert(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.APIURL = "https://api.crond.io"
+	cfg.TLSCACert = writeTestCACert(t)
+
+	client, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err != nil {
+		t.Fatalf("NewClient with valid CA: %v", err)
+	}
+	tr, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if tr.TLSClientConfig == nil || tr.TLSClientConfig.RootCAs == nil {
+		t.Fatal("expected custom RootCAs pool to be configured from the CA file")
+	}
+	if tr.TLSClientConfig.InsecureSkipVerify {
+		t.Error("InsecureSkipVerify must stay false when only a CA cert is set")
+	}
+}
+
+// TestNewClientWithMalformedCACert covers the AppendCertsFromPEM failure branch
+// (file exists and is readable but contains no valid PEM certificate).
+func TestNewClientWithMalformedCACert(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.pem")
+	if err := os.WriteFile(path, []byte("-----BEGIN CERTIFICATE-----\nnot base64\n-----END CERTIFICATE-----\n"), 0o600); err != nil {
+		t.Fatalf("write bad cert: %v", err)
+	}
+	cfg := newTestConfig()
+	cfg.TLSCACert = path
+
+	_, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err == nil {
+		t.Fatal("expected error for malformed CA cert")
+	}
+	if !strings.Contains(err.Error(), "invalid CA cert") {
+		t.Errorf("error = %v, want it to mention 'invalid CA cert'", err)
+	}
+}
+
+// TestNewClientInsecureSkipVerify covers the insecure-skip-verify branch of
+// both NewClient (the loud warning) and buildTLSConfig.
+func TestNewClientInsecureSkipVerify(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.TLSInsecureSkipVerify = true
+
+	client, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	tr, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.httpClient.Transport)
+	}
+	if tr.TLSClientConfig == nil || !tr.TLSClientConfig.InsecureSkipVerify {
+		t.Error("expected InsecureSkipVerify=true on the transport's TLS config")
+	}
+}
+
+// TestSendContextDeadlineDuringBackoff covers the ctx.Done() branch inside the
+// retry backoff sleep: the server keeps returning 500, the per-call deadline
+// expires mid-backoff, and Send must return the context error promptly rather
+// than burning the full retry budget.
+func TestSendContextDeadlineDuringBackoff(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	cfg := newTestConfig()
+	cfg.APIURL = server.URL
+	cfg.Retries = 5
+	cfg.RetryBaseDelay = 200 * time.Millisecond // first backoff outlasts the ctx deadline
+	client, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = client.Send(ctx, "test-key", "", nil)
+	if err == nil {
+		t.Fatal("expected a context deadline error")
+	}
+	if !strings.Contains(err.Error(), "deadline") && !strings.Contains(err.Error(), "context") {
+		t.Errorf("error = %v, want a context/deadline error", err)
+	}
+	// Must abort during the first backoff, well short of 5 × 200ms.
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("Send ran %v — did not abort backoff on ctx deadline", elapsed)
+	}
+}
+
+// TestSendNetworkErrorRetriesThenFails covers the transport-error retry path
+// (lastErr assignment on a connection failure) and the final
+// retries-exhausted return when every attempt fails to connect.
+func TestSendNetworkErrorRetriesThenFails(t *testing.T) {
+	cfg := newTestConfig()
+	cfg.APIURL = "http://127.0.0.1:1" // nothing listens on port 1 → connection refused
+	cfg.Retries = 2
+	cfg.RetryBaseDelay = 1 * time.Millisecond
+	client, err := NewClient(cfg, "1.0.0", newTestLogger())
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	if err := client.Send(context.Background(), "test-key", "", nil); err == nil {
+		t.Fatal("expected a network error after retries are exhausted")
 	}
 }

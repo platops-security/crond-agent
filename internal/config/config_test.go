@@ -241,3 +241,29 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// TestCompileRedactPatterns covers the compile step that turns the validated
+// []string into the live regexps the runner applies to captured output.
+func TestCompileRedactPatterns(t *testing.T) {
+	cfg := &Config{RedactPatterns: []string{`Bearer [A-Za-z0-9]+`, `password=\S+`}}
+	compiled := cfg.CompileRedactPatterns()
+	if len(compiled) != 2 {
+		t.Fatalf("expected 2 compiled patterns, got %d", len(compiled))
+	}
+	if !compiled[0].MatchString("auth Bearer abc123") {
+		t.Errorf("first pattern should match a Bearer token")
+	}
+	if !compiled[1].MatchString("password=hunter2") {
+		t.Errorf("second pattern should match password=...")
+	}
+
+	// Empty input compiles to a non-nil, empty slice so callers can range
+	// over it (and newStreamingRedactWriter takes its no-op fast path).
+	empty := (&Config{}).CompileRedactPatterns()
+	if empty == nil {
+		t.Error("expected non-nil slice for empty patterns")
+	}
+	if len(empty) != 0 {
+		t.Errorf("expected 0 compiled patterns, got %d", len(empty))
+	}
+}
