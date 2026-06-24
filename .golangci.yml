@@ -1,0 +1,27 @@
+# golangci-lint config for crond-agent. Keep narrow — we want fast feedback
+# on real bugs, not bikesheds on naming/format style (gofmt handles that).
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # vet
+    - staticcheck   # broad static analysis
+    - ineffassign   # ineffective assignments
+    - unused        # unused symbols
+    - gosimple      # simplifications
+    - gosec         # security
+    - bodyclose     # http response body not closed
+    - rowserrcheck  # sql rows.Err not checked
+    - misspell
+
+issues:
+  exclude-rules:
+    # Test files: relax errcheck and gosec — t.Fatal handles most failures.
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec

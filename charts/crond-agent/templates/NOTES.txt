@@ -1,0 +1,48 @@
+crond-agent installed in namespace "{{ .Release.Namespace }}".
+
+{{- if not .Values.pingKeys }}
+
+⚠  WARNING — no ping keys configured.
+    The Secret was NOT created because .Values.pingKeys is empty. Wrapped
+    CronJobs will fail at startup with "secret not found".
+
+    Set ping keys at install time. Example:
+
+      helm upgrade --install {{ .Release.Name }} <chart> \
+        --set pingKeys.PING_KEY_BACKUP=<your-monitor-uuid>
+
+{{- else }}
+
+Secret "{{ include "crond-agent.secretName" . }}" holds {{ len .Values.pingKeys }} ping key(s):
+{{- range $name, $_ := .Values.pingKeys }}
+  - {{ $name }}
+{{- end }}
+
+{{- end }}
+
+Next: wrap a CronJob with the agent. Minimal example:
+
+    apiVersion: batch/v1
+    kind: CronJob
+    metadata:
+      name: my-backup
+      namespace: {{ .Release.Namespace }}
+    spec:
+      schedule: "0 2 * * *"
+      jobTemplate:
+        spec:
+          template:
+            spec:
+              restartPolicy: OnFailure
+              {{`{{- include "crond-agent.wrap" (dict
+                  "context" $
+                  "envKey" "PING_KEY_BACKUP"
+                  "image" "myco/backup:1.0"
+                  "command" (list "/opt/backup.sh"))
+                | nindent 14 }}`}}
+
+Full quickstart + examples:
+  https://crond.io/docs/kubernetes
+
+Agent image:  {{ .Values.image.repository }}:{{ .Values.image.tag }}
+API endpoint: {{ .Values.agent.apiUrl }}

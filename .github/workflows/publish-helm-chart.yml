@@ -1,0 +1,81 @@
+name: Publish Helm Chart
+
+# Publishes the crond-agent Helm chart to GHCR as an OCI artifact when a
+# chart-v* tag is pushed. GH Pages distribution was originally planned but
+# requires a public repo (or a paid org plan for private-Pages), so this
+# workflow uses only the OCI path. Helm 3.8+ supports OCI registries
+# natively, which covers every practical install scenario.
+
+on:
+  push:
+    tags: ['chart-v*']
+
+permissions:
+  contents: write   # for GitHub Release creation
+  packages: write   # for ghcr.io OCI push
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: 'v3.14.0'
+
+      - name: Derive and assert versions
+        id: versions
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_VERSION="${REF_NAME#chart-v}"
+          CHART_VERSION=$(grep '^version:' charts/crond-agent/Chart.yaml | awk '{print $2}')
+          if [ "$TAG_VERSION" != "$CHART_VERSION" ]; then
+            echo "::error::Tag chart-v$TAG_VERSION does not match Chart.yaml version $CHART_VERSION"
+            exit 1
+          fi
+          echo "version=$CHART_VERSION" >> "$GITHUB_OUTPUT"
+          echo "pkg_path=/tmp/chart-pkg/crond-agent-$CHART_VERSION.tgz" >> "$GITHUB_OUTPUT"
+          echo "publishing crond-agent-$CHART_VERSION"
+
+      - name: Package chart
+        env:
+          PKG_DIR: /tmp/chart-pkg
+        run: |
+          mkdir -p "$PKG_DIR"
+          helm package charts/crond-agent -d "$PKG_DIR"
+
+      - name: Login to GHCR
+        env:
+          GH_USER: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_USER" --password-stdin
+
+      - name: Push chart to OCI
+        env:
+          PKG_PATH: ${{ steps.versions.outputs.pkg_path }}
+        run: |
+          helm push "$PKG_PATH" oci://ghcr.io/platops-security/crond-agent/charts
+
+      - name: Attach chart to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.versions.outputs.version }}
+          PKG_PATH: ${{ steps.versions.outputs.pkg_path }}
+        run: |
+          # Idempotent: if a release for this tag already exists (e.g.
+          # a previous workflow run did OCI push then crashed before the
+          # release step), replace the attached asset instead of failing.
+          if gh release view "$REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$REF_NAME" "$PKG_PATH" --clobber
+          else
+            gh release create "$REF_NAME" \
+              --title "Helm chart $REF_NAME" \
+              --notes "OCI install: \`helm install crond-agent oci://ghcr.io/platops-security/crond-agent/charts/crond-agent --version ${VERSION}\`" \
+              "$PKG_PATH"
+          fi

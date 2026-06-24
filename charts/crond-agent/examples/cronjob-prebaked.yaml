@@ -1,0 +1,57 @@
+# Example CronJob using crond-agent via a PRE-BAKED image.
+#
+# Alternative to the init-container pattern: bake the agent into your
+# own job image, so no init container is needed at runtime. Use this
+# when you control the job image and want to avoid the extra container.
+#
+# Build your image like this:
+#
+#   # Dockerfile.myjob
+#   FROM ghcr.io/platops-security/crond-agent:0.1.1 AS agent
+#
+#   FROM alpine:3.20
+#   COPY --from=agent /crond-agent /usr/local/bin/crond-agent
+#   COPY backup.sh /opt/backup.sh
+#   ENTRYPOINT ["/opt/backup.sh"]
+#
+# Then this CronJob skips the wrapper macro and invokes crond-agent
+# directly — only the env var and Secret reference come from the chart.
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: example-prebaked-backup
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+spec:
+  schedule: "0 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: job
+              # Replace with your pre-baked image. /usr/local/bin/crond-agent
+              # must exist inside it.
+              image: myco/backup-with-agent:1.0
+              command:
+                - "/usr/local/bin/crond-agent"
+                - "exec"
+                - "--key=$(PING_KEY_REPORTS)"
+                - "--api-url={{ .Values.agent.apiUrl }}"
+                - "--"
+                - "/opt/backup.sh"
+              env:
+                {{- include "crond-agent.envFromSecret"
+                    (dict "context" $ "envKey" "PING_KEY_REPORTS")
+                  | nindent 16 }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}

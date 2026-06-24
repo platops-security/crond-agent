@@ -1,0 +1,18 @@
+# Example /etc/cron.d/<your-job> entry wrapping a script with crond-agent.
+#
+# crond-agent reports start/finish/exit-code to api.crond.io and forwards
+# the wrapped command's stdout/stderr (subject to capture_output and
+# redact_patterns in /etc/crond-agent/config.yaml).
+#
+# Replace REPLACE-WITH-YOUR-PING-KEY with the UUID from your monitor
+# dashboard. Each cron line wraps exactly one command — keep one monitor
+# per command for clean status semantics.
+#
+# Daily 03:00 system backup:
+0 3 * * * root /usr/local/bin/crond-agent exec --key REPLACE-WITH-YOUR-PING-KEY -- /usr/local/sbin/backup.sh
+
+# Every-15-min health probe (passthrough off for quiet jobs):
+*/15 * * * * www-data /usr/local/bin/crond-agent exec --key REPLACE-WITH-YOUR-PING-KEY -- /usr/local/bin/health-probe
+
+# Hourly database vacuum, with a 30-minute hard timeout:
+30 * * * * postgres /usr/local/bin/crond-agent exec --key REPLACE-WITH-YOUR-PING-KEY --timeout 30m -- /usr/bin/psql -c VACUUM

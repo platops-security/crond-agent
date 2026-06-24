@@ -1,0 +1,42 @@
+{{/*
+  Smoke-test fixture exercising the crond-agent.wrap macro.
+
+  - Gated by .Values.tests.enabled (default false) so `helm install` and
+    `helm upgrade` never deploy it.
+  - Also gated on .Values.pingKeys.PING_KEY_BACKUP existing — without it,
+    the rendered CronJob's secretKeyRef points at a key that isn't in the
+    Secret, so `helm test` would fail at apply time.
+  - Carries `helm.sh/hook: test` so even when rendered, it's classified as
+    a Helm test resource (not a normal manifest).
+  - Used for CI / manual offline validation:
+      helm template test . -f examples/test-values.yaml \
+        --set tests.enabled=true -s templates/tests/wrapper-render-fixture.yaml
+
+  Verifies: init-container injection, command rewrite, envFromSecret,
+  volume + volumeMount, securityContext propagation.
+*/}}
+{{- if and .Values.tests.enabled (hasKey .Values.pingKeys "PING_KEY_BACKUP") -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "crond-agent.fullname" . }}-wrapper-test
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          {{- include "crond-agent.wrap" (dict
+              "context" $
+              "envKey" "PING_KEY_BACKUP"
+              "image" "alpine:3.20"
+              "command" (list "sh" "-c" "echo crond-agent wrapper smoke test"))
+            | nindent 10 }}
+{{- end -}}

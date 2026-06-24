@@ -1,0 +1,14 @@
+# Build output
+/bin/
+/dist/
+
+# Go test / coverage
+*.out
+coverage.txt
+
+# Local config (never commit a real ping key)
+/config.yaml
+
+# Editor / OS
+.DS_Store
+*.swp

@@ -1,0 +1,15 @@
+# Patterns to ignore when building Helm chart packages.
+.DS_Store
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+# Don't ship the rendered examples — they're documentation, not chart
+# templates. Users either copy them or use them as a reference.
+examples/
+README.md.tmpl

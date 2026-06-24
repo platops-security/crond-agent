@@ -1,0 +1,50 @@
+# Example CronJob using crond-agent via init-container injection.
+#
+# This is the RECOMMENDED pattern: your job image stays untouched. An
+# init container copies the agent binary into a shared emptyDir; the
+# main container runs the agent, which wraps your original command and
+# pings crond.io on success/failure.
+#
+# How to use this file:
+#
+#   1. `helm install crond-agent <chart-source> -n my-app --create-namespace \
+#         --set pingKeys.PING_KEY_BACKUP=<your-monitor-uuid>`
+#   2. Copy this file into your repo, edit `metadata.name`, `spec.schedule`,
+#      `image`, and `command` to match your job.
+#   3. `kubectl apply -f cronjob-init-container.yaml -n my-app`
+#
+# The {{`{{ include "crond-agent.wrap" ... }}`}} line below expands at
+# render time when this file is included in your own Helm chart. If you
+# want raw YAML instead, copy this file into your chart's templates/
+# dir, run `helm template` against your chart, and commit the rendered
+# output. (Helm cannot render files outside templates/ via -s, and this
+# chart deliberately excludes examples/ from its package via .helmignore.)
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: example-backup
+  # Namespace must match the Helm release namespace so the secretKeyRef
+  # references the chart-owned Secret.
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+spec:
+  # Cron expression in K8s syntax (5 fields, no seconds).
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      # Don't retry forever — let the monitor catch persistent failures.
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          {{- include "crond-agent.wrap" (dict
+              "context" $
+              "envKey" "PING_KEY_BACKUP"
+              "image" "alpine:3.20"
+              "command" (list "sh" "-c" "echo running backup; sleep 2; echo done")
+            ) | nindent 10 }}

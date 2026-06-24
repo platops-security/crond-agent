@@ -1,0 +1,141 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+project_name: crond-agent
+dist: dist
+
+builds:
+  - id: crond-agent
+    main: ./cmd/crond-agent
+    binary: crond-agent
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, freebsd]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: freebsd
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.ShortCommit}}
+      - -X main.BuildDate={{.Date}}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+nfpms:
+  - package_name: crond-agent
+    vendor: crond.io
+    homepage: https://crond.io
+    maintainer: crond.io team
+    description: Cron job monitoring agent
+    license: MIT
+    formats: [deb, rpm]
+    contents:
+      - src: config.example.yaml
+        dst: /etc/crond-agent/config.yaml
+        type: config
+      - src: scripts/cron.d.example
+        dst: /usr/share/doc/crond-agent/cron.d.example
+        file_info:
+          mode: 0o644
+    scripts:
+      # Postinstall is a no-op daemon-wise (crond-agent is a wrapper, not a
+      # service); it just prints next-step guidance after install.
+      postinstall: scripts/postinstall.sh
+    # GPG-sign the packages so `apt`/`dnf`/`rpm --checksig` can verify
+    # authenticity of a directly-installed .deb/.rpm (no hosted repo yet).
+    # key_file is templated from $GPG_KEY_PATH and the passphrase from
+    # $NFPM_PASSPHRASE — both injected by the release workflow. On snapshot
+    # builds (CI dry-run, nightly) GPG_KEY_PATH is empty, so nfpm skips
+    # signing and the unsigned packages still build.
+    deb:
+      signature:
+        key_file: "{{ .Env.GPG_KEY_PATH }}"
+    rpm:
+      signature:
+        key_file: "{{ .Env.GPG_KEY_PATH }}"
+
+# Replaces the deprecated `brews:` block (removed in goreleaser v2.16).
+# Despite the name, this generates a tap entry that `brew install` works
+# against — the `install:` directive uses formula-style DSL.
+homebrew_casks:
+  - name: crond-agent
+    repository:
+      owner: platops-security
+      name: homebrew-tap
+      branch: main
+      # Default GITHUB_TOKEN can't push to a sibling repo; we inject a
+      # fine-grained PAT (HOMEBREW_TAP_TOKEN) scoped to homebrew-tap
+      # Contents: read+write in the release workflow.
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: https://crond.io
+    description: Cron job monitoring agent — wraps cron commands and reports exit codes / duration / output.
+    binaries: [crond-agent]
+    # commit_author keeps the tap repo's commits attributed to the bot,
+    # not whoever's PAT is in use.
+    commit_author:
+      name: goreleaser-bot
+      email: bot@goreleaser.com
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  # Syft-generated SBOM per archive. Lets downstream users / scanners
+  # inventory dependencies without re-running the build.
+  - artifacts: archive
+
+signs:
+  # Keyless cosign signing of checksums.txt via GitHub OIDC. Produces
+  # checksums.txt.pem (cert) + checksums.txt.sig — install.sh uses these
+  # to verify the download came from this exact workflow.
+  - cmd: cosign
+    signature: '${artifact}.sig'
+    certificate: '${artifact}.pem'
+    args:
+      - sign-blob
+      - '--output-signature=${signature}'
+      - '--output-certificate=${certificate}'
+      - '--yes'
+      - '${artifact}'
+    artifacts: checksum
+
+docker_signs:
+  # Keyless cosign signing of pushed multi-arch image manifests.
+  - cmd: cosign
+    args:
+      - sign
+      - '--yes'
+      - '${artifact}'
+    artifacts: manifests
+
+# dockers_v2 replaces the deprecated per-arch dockers + docker_manifests
+# pair: one entry produces multi-arch manifests in a single buildx run.
+# Requires goreleaser v2.12+; the action pin in release-agent.yml /
+# nightly-build-agent.yml is bumped to match.
+dockers_v2:
+  - id: agent
+    ids: [crond-agent]
+    images:
+      - "ghcr.io/platops-security/crond-agent"
+    dockerfile: Dockerfile
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: crond-agent
+      org.opencontainers.image.description: "Cron job monitoring agent for crond.io — wraps cron commands and reports exit codes / duration / output."
+      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.source: https://github.com/platops-security/crond-agent
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude: ['^docs:', '^test:', '^chore:']

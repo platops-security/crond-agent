@@ -1,0 +1,101 @@
+name: Nightly Build
+
+# Publishes :nightly multi-arch Docker image + snapshot tarballs/packages on
+# pushes to main and on a daily schedule. Lets users pull
+# `ghcr.io/platops-security/crond-agent:nightly` for bleeding-edge testing
+# without waiting for a tagged release. Nightlies are unsigned and carry no
+# SBOM/provenance — only tagged releases do.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: nightly-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.26'
+          cache-dependency-path: go.sum
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: GoReleaser snapshot
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: 'v2.16.0'
+          # --snapshot skips the tag requirement and publish step; --skip=sbom
+          # + --skip=sign because syft and cosign aren't installed here (and
+          # nightlies don't ship signed artifacts). GPG_KEY_PATH is empty so
+          # nfpm skips package signing too. Docker images build locally.
+          args: release --snapshot --clean --skip=sbom --skip=sign
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_KEY_PATH: ''
+
+      - name: Re-tag and push :nightly multi-arch image
+        env:
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          SHA=${SHORT_SHA:0:7}
+          OUTDIR=dist
+          BASE=ghcr.io/platops-security/crond-agent
+          # goreleaser writes metadata.json as a top-level object (not an
+          # array). Use .version, and fail loudly if absent.
+          SNAP_TAG=$(jq -r '.version' "$OUTDIR/metadata.json")
+          if [ -z "$SNAP_TAG" ] || [ "$SNAP_TAG" = "null" ]; then
+            echo "::error::dist/metadata.json missing .version — goreleaser output unexpected"
+            exit 1
+          fi
+          # Retag the goreleaser-built local images to commit-anchored names so
+          # we don't leak the noisy 0.0.0-SNAPSHOT-<sha> tag into the public
+          # registry. Per-arch tags are needed for buildx imagetools create.
+          docker tag "${BASE}:${SNAP_TAG}-amd64" "${BASE}:nightly-${SHA}-amd64"
+          docker tag "${BASE}:${SNAP_TAG}-arm64" "${BASE}:nightly-${SHA}-arm64"
+          docker push "${BASE}:nightly-${SHA}-amd64"
+          docker push "${BASE}:nightly-${SHA}-arm64"
+          docker buildx imagetools create \
+            -t "${BASE}:nightly" \
+            -t "${BASE}:nightly-${SHA}" \
+            "${BASE}:nightly-${SHA}-amd64" "${BASE}:nightly-${SHA}-arm64"
+
+      - name: Upload nightly artifacts to rolling pre-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          TAG=nightly
+          OUTDIR=dist
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" \
+            --prerelease \
+            --title "Nightly build" \
+            --notes "Rolling pre-release. Built from \`${COMMIT_SHA}\`. Not for production." \
+            "$OUTDIR"/*.tar.gz \
+            "$OUTDIR"/*.deb \
+            "$OUTDIR"/*.rpm \
+            "$OUTDIR/checksums.txt"

@@ -1,0 +1,48 @@
+# crond-agent configuration
+# Copy to /etc/crond-agent/config.yaml or ~/.config/crond-agent/config.yaml
+
+# API endpoint for crond.io (or your self-hosted instance)
+api_url: https://api.crond.io
+
+# Ping key UUID — identifies the monitor to ping
+# ping_key: your-uuid-here
+
+# Command timeout (0 = no timeout). Examples: 30s, 5m, 1h
+timeout: 0
+
+# Max bytes captured per stdout/stderr stream before truncation
+max_output_bytes: 51200
+
+# Logging: level (debug, info, warn, error) and format (json, text)
+log_level: info
+log_format: json
+
+# Retry settings for API pings
+retries: 3
+retry_base_delay: 1s
+
+# TLS settings (for self-hosted instances behind corporate proxies)
+# tls_ca_cert: /path/to/ca-cert.pem
+# tls_insecure_skip_verify: false
+
+# Privacy controls for wrapped command stdout/stderr in ping payloads.
+#
+# capture_output: when false, drop stdout/stderr from the API payload
+# entirely. The streams still pass through to the host (so `kubectl logs`
+# and /var/log/cron remain useful). Default true.
+#
+# redact_patterns: list of Go regexps applied to captured streams before
+# they are sent. Matches are replaced with [REDACTED]. Validated at
+# startup. Use to scrub Bearer tokens, DSNs, env-var dumps, etc.
+#
+# IMPORTANT: redaction runs AFTER max_output_bytes truncation. A secret
+# that straddles the truncation boundary will have its tail cut off and
+# the prefix will no longer match the regex — the unredacted prefix would
+# then ship to the API. Mitigation: set max_output_bytes large enough that
+# secret-bearing lines fit in full, or set capture_output: false for jobs
+# whose output you do not want sent at all.
+capture_output: true
+# redact_patterns:
+#   - 'Bearer [A-Za-z0-9._-]+'
+#   - 'postgres://[^@]+@[^/[:space:]]+'
+#   - '(?i)(password|api[_-]?key|secret)\s*[:=]\s*\S+'
