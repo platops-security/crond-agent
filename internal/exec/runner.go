@@ -29,7 +29,11 @@ type Result struct {
 // terminate the wrapped command (timeout, parent context cancel, or a
 // forwarded signal). Long enough for a well-behaved script to flush a final
 // write or roll back a transaction before being killed.
-const gracePeriod = 10 * time.Second
+//
+// A var rather than a const purely so tests can shorten the window to exercise
+// the SIGKILL-after-grace escalation without a 10s wall-clock wait; production
+// never reassigns it.
+var gracePeriod = 10 * time.Second
 
 // Options bundles the optional knobs for RunWithOptions. Zero values are
 // safe defaults: no passthrough, no redaction.
@@ -210,6 +214,11 @@ func exitCodeFromExitError(e *exec.ExitError) int {
 // Parent context cancellation is treated the same as a timeout. The sigs
 // channel must already be subscribed (via signal.Notify) by the caller.
 func waitWithGracefulTermination(ctx context.Context, cmd *exec.Cmd, pgid int, timeout time.Duration, sigs <-chan os.Signal, logger *slog.Logger) error {
+	// Snapshot the grace window once at entry so the kill goroutine reads a
+	// local, not the package var. Production never reassigns gracePeriod; tests
+	// do, and capturing here keeps that reassignment race-free.
+	grace := gracePeriod
+
 	// childExited flips true the instant cmd.Wait returns. The grace-kill
 	// goroutine checks it before issuing SIGKILL, closing the (very narrow)
 	// race where a PID-reuse could let our SIGKILL hit an unrelated pgid
@@ -242,7 +251,7 @@ func waitWithGracefulTermination(ctx context.Context, cmd *exec.Cmd, pgid int, t
 		killed = true
 		go func() {
 			select {
-			case <-time.After(gracePeriod):
+			case <-time.After(grace):
 				if childExited.Load() {
 					return // PID-reuse guard: don't SIGKILL a recycled pgid
 				}
