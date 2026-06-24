@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"regexp"
 	"strings"
 	"testing"
@@ -212,5 +213,52 @@ func TestStreamingRedactWriter_CloseOnEmptyBufferIsNoop(t *testing.T) {
 	}
 	if err := w.Close(); err != nil { // buffer already empty after the newline flush
 		t.Fatalf("Close on empty buffer should be a no-op, got %v", err)
+	}
+}
+
+func TestRedactArgsForLog(t *testing.T) {
+	patterns := []*regexp.Regexp{regexp.MustCompile(`password=\S+`)}
+	in := []string{"app", "--password=hunter2swordfish", "--verbose"}
+
+	out := redactArgsForLog(in, patterns)
+	if out[1] != "--[REDACTED]" {
+		t.Errorf("arg with secret = %q, want %q", out[1], "--[REDACTED]")
+	}
+	if out[0] != "app" || out[2] != "--verbose" {
+		t.Errorf("non-secret args should be unchanged, got %v", out)
+	}
+	// The child must still receive the real args — input must not be mutated.
+	if in[1] != "--password=hunter2swordfish" {
+		t.Errorf("input args were mutated: %q", in[1])
+	}
+	// No patterns → the original slice is returned (zero allocation/overhead).
+	none := []string{"a", "b"}
+	got := redactArgsForLog(none, nil)
+	if &got[0] != &none[0] {
+		t.Error("with no patterns the original slice should be returned unchanged")
+	}
+}
+
+// TestRunWithOptions_LoggedArgsAreRedacted proves the wiring: a secret on the
+// wrapped command line is redacted in the agent's "exec start" log while the
+// command still runs with the real arguments.
+func TestRunWithOptions_LoggedArgsAreRedacted(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	_, err := RunWithOptions(context.Background(),
+		[]string{"sh", "-c", "true", "sh", "--password=topsecret123"},
+		5*time.Second, 4096, Options{
+			RedactPatterns: []*regexp.Regexp{regexp.MustCompile(`password=\S+`)},
+		}, logger,
+	)
+	if err != nil {
+		t.Fatalf("RunWithOptions: %v", err)
+	}
+	if strings.Contains(logBuf.String(), "topsecret123") {
+		t.Errorf("secret in command args leaked into agent log: %q", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "[REDACTED]") {
+		t.Errorf("expected [REDACTED] in exec-start log, got %q", logBuf.String())
 	}
 }
