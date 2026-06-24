@@ -1,0 +1,38 @@
+version: 2
+updates:
+  # GitHub Actions are SHA-pinned; Dependabot understands the pin + version
+  # comment and bumps both together. Grouped weekly to keep PR noise low.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Go module dependencies (kept minimal — currently just gopkg.in/yaml.v3).
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+
+  # Dockerfile base images, including the digest-pinned alpine certs builder.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+    groups:
+      docker:
+        patterns:
+          - "*"
