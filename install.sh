@@ -23,8 +23,16 @@ esac
 
 echo "Detected platform: ${OS}/${ARCH}"
 
-# Fetch latest release tag from GitHub API.
-LATEST=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+# Resolve the latest STABLE agent release version (MAJOR.MINOR.PATCH).
+# We list releases and keep only exact agent semver tags ("vX.Y.Z"), then take
+# the newest. This deliberately skips `chart-v*` Helm releases, the rolling
+# `nightly` pre-release, and `-rc`/`-beta` prereleases. Using /releases/latest
+# instead would break here: it returns whichever non-prerelease release is
+# newest, which can be a `chart-v*` tag and yields a malformed download URL.
+LATEST=$(curl -sSf "https://api.github.com/repos/${REPO}/releases" \
+  | grep -oE '"tag_name": *"v[0-9]+\.[0-9]+\.[0-9]+"' \
+  | sed -E 's/.*"v([0-9]+\.[0-9]+\.[0-9]+)"/\1/' \
+  | head -n1)
 if [ -z "$LATEST" ]; then
   echo "Failed to determine latest version"; exit 1
 fi
