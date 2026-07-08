@@ -1,0 +1,70 @@
+{{- if and .Values.injector.enabled (not .Values.injector.certManager.enabled) }}
+{{/*
+  Serving cert + MutatingWebhookConfiguration in ONE file so the generated CA
+  is shared between the Secret the injector serves and the webhook's caBundle.
+  `lookup` reuses the existing Secret on `helm upgrade` (no rotation, no
+  apiserver-trust gap); a fresh install generates a self-signed CA once.
+*/}}
+{{- $ns := .Release.Namespace -}}
+{{- $svc := include "crond-agent.injector.fullname" . -}}
+{{- $secretName := printf "%s-tls" $svc -}}
+{{- $cn := printf "%s.%s.svc" $svc $ns -}}
+{{- $altNames := list $cn (printf "%s.%s.svc.cluster.local" $svc $ns) -}}
+{{- $tlsCrt := "" -}}{{- $tlsKey := "" -}}{{- $caCrt := "" -}}
+{{- $existing := lookup "v1" "Secret" $ns $secretName -}}
+{{- if and $existing (hasKey (default dict $existing.data) "tls.crt") -}}
+  {{- $tlsCrt = index $existing.data "tls.crt" -}}
+  {{- $tlsKey = index $existing.data "tls.key" -}}
+  {{- $caCrt = index $existing.data "ca.crt" -}}
+{{- else -}}
+  {{- $ca := genCA (printf "%s-ca" $svc) 3650 -}}
+  {{- $cert := genSignedCert $cn nil $altNames 3650 $ca -}}
+  {{- $tlsCrt = b64enc $cert.Cert -}}
+  {{- $tlsKey = b64enc $cert.Key -}}
+  {{- $caCrt = b64enc $ca.Cert -}}
+{{- end -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $secretName }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $tlsCrt }}
+  tls.key: {{ $tlsKey }}
+  ca.crt: {{ $caCrt }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ $svc }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+webhooks:
+  - name: cronjobs.crond.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    # Ignore: a webhook outage never blocks the user's CronJobs (do no harm).
+    failurePolicy: {{ .Values.injector.failurePolicy }}
+    timeoutSeconds: {{ .Values.injector.timeoutSeconds }}
+    reinvocationPolicy: Never
+    matchPolicy: Equivalent
+    namespaceSelector:
+      matchLabels:
+        {{ .Values.injector.namespaceSelectorLabel | quote }}: enabled
+    rules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["cronjobs"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: {{ $svc }}
+        namespace: {{ $ns }}
+        path: /mutate
+        port: 443
+      caBundle: {{ $caCrt }}
+{{- end }}

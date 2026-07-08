@@ -93,6 +93,53 @@ initResources:
 sharedVolumeName: crond-agent-shared
 sharedMountPath: /shared
 
+# ─────────────────────────────────────────────────────────────────────────
+# V2 auto-injection (mutating admission webhook). OFF by default. When
+# enabled, CronJobs in an opted-in namespace (labeled
+# `<namespaceSelectorLabel>: enabled`) that carry the annotation
+# `crond.io/inject: "true"` are wrapped automatically at admission time —
+# no per-CronJob Helm macro. The injected shape is identical to the
+# crond-agent.wrap macro (init container + shared volume + `crond-agent exec`).
+#
+# Required per-CronJob annotations:
+#   crond.io/inject: "true"                # opt this CronJob in
+#   crond.io/ping-key-env: PING_KEY_BACKUP # names a key in the pingKeys Secret
+# Optional:
+#   crond.io/container: <name>             # which container to wrap (default: first)
+#   crond.io/mode: prebaked                # image already contains /crond-agent
+# ─────────────────────────────────────────────────────────────────────────
+injector:
+  enabled: false
+  replicaCount: 2
+  image:
+    repository: ghcr.io/platops-security/crond-agent-injector
+    # Defaults to .Chart.AppVersion when empty.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Only namespaces carrying `<namespaceSelectorLabel>: enabled` are sent to
+  # the webhook — the first line of blast-radius control. Label a namespace:
+  #   kubectl label ns my-jobs crond.io/inject=enabled
+  namespaceSelectorLabel: crond.io/inject
+  # Ignore = a webhook outage or timeout never blocks CronJob create/update.
+  # Correct for an observability add-on. Use Fail only if injection is
+  # mandatory for your compliance posture.
+  failurePolicy: Ignore
+  timeoutSeconds: 5
+  port: 8443
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 64Mi
+  # TLS for the webhook endpoint. By default the chart generates a self-signed
+  # CA + serving cert and PERSISTS them across `helm upgrade` via `lookup`
+  # (no external dependency). cert-manager support is tracked but not yet
+  # implemented — leave disabled.
+  certManager:
+    enabled: false
+
 # Internal flag. Renders templates/tests/* fixtures used for offline
 # verification of the wrapper macros. NOT for production use — these
 # templates are tagged with helm.sh/hook: test, so `helm install` skips

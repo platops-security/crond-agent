@@ -1,0 +1,31 @@
+# syntax=docker/dockerfile:1
+#
+# Image for the crond-agent mutating admission webhook (injector).
+#
+# Kept SEPARATE from the agent image (Dockerfile) on purpose: the agent binary
+# is copied into every wrapped job pod via the init-container pattern, so it
+# must stay tiny. The injector runs as a long-lived Deployment and can carry a
+# slightly larger footprint without affecting that hot path.
+#
+# Self-compiling (unlike the agent's COPY-only Dockerfile) so it builds with a
+# plain `docker build` for local kind e2e and simple CI, independent of the
+# goreleaser artifact layout.
+
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w -X main.Version=${VERSION}" \
+      -o /crond-agent-injector ./cmd/crond-agent-injector
+
+FROM alpine:3.24 AS certs
+RUN apk add --no-cache ca-certificates
+
+FROM scratch
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /crond-agent-injector /crond-agent-injector
+USER 65532:65532
+ENTRYPOINT ["/crond-agent-injector"]
