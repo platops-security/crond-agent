@@ -90,6 +90,64 @@ Then your CronJob skips the wrapper macro and invokes `crond-agent`
 directly — only `envFromSecret` is reused. See
 `examples/cronjob-prebaked.yaml`.
 
+## Auto-injection (V2 — mutating admission webhook)
+
+Instead of pasting the `crond-agent.wrap` macro into every CronJob, enable the
+opt-in mutating admission webhook. It wraps labeled CronJobs automatically at
+admission time, producing the same runtime shape as the macro (init container +
+shared volume + `crond-agent exec`).
+
+Enable it, then label the namespaces that may be injected:
+
+```bash
+helm upgrade --install crond-agent \
+  oci://ghcr.io/platops-security/crond-agent/charts/crond-agent \
+  --namespace my-jobs --create-namespace \
+  --set injector.enabled=true \
+  --set pingKeys.PING_KEY_BACKUP=<your-uuid>
+
+# opt the namespace in (first line of blast-radius control)
+kubectl label namespace my-jobs crond.io/inject=enabled
+```
+
+Then annotate any CronJob you want wrapped — no spec surgery:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly-backup
+  annotations:
+    crond.io/inject: "true"                 # opt this CronJob in
+    crond.io/ping-key-env: PING_KEY_BACKUP  # a key in .Values.pingKeys
+    # crond.io/container: backup            # optional: which container (default: first)
+    # crond.io/mode: prebaked               # optional: image already has /crond-agent
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: backup
+              image: myco/backup:1.0
+              command: ["/opt/backup.sh"]   # an explicit command is required
+              args: ["--full"]
+```
+
+Notes:
+- **`failurePolicy: Ignore`** — if the webhook is down, CronJobs are admitted
+  unmodified. An observability add-on must never block your workloads; they run
+  unmonitored until the injector recovers.
+- The container **must set an explicit `command`** — the webhook can't wrap an
+  image entrypoint it can't see. Set `command` or bake the agent in
+  (`crond.io/mode: prebaked`).
+- Idempotent: a CronJob already carrying the `crond.io/injected` marker (or a
+  macro-wrapped one) is skipped.
+- TLS uses a chart-generated self-signed CA, persisted across `helm upgrade`.
+- Requires the `crond-agent-injector` image (`injector.image.*`). Confirm it is
+  published for your chart version before enabling.
+
 ## Values reference
 
 | Key | Default | Description |
@@ -107,6 +165,14 @@ directly — only `envFromSecret` is reused. See
 | `initResources.{requests,limits}` | 10m/16Mi → 100m/64Mi | Init container only; main container resources are yours |
 | `sharedVolumeName` | `crond-agent-shared` | Override on volume-name collision |
 | `sharedMountPath` | `/shared` | Where init container drops the binary |
+| `injector.enabled` | `false` | Enable the V2 mutating admission webhook (auto-injection) |
+| `injector.replicaCount` | `2` | Injector Deployment replicas |
+| `injector.image.repository` | `ghcr.io/platops-security/crond-agent-injector` | Injector image (separate from the tiny agent image) |
+| `injector.image.tag` | `""` | Defaults to the chart `appVersion` |
+| `injector.namespaceSelectorLabel` | `crond.io/inject` | Only namespaces labeled `<this>: enabled` are sent to the webhook |
+| `injector.failurePolicy` | `Ignore` | `Ignore` = a webhook outage never blocks CronJobs |
+| `injector.timeoutSeconds` | `5` | Admission call timeout |
+| `injector.certManager.enabled` | `false` | Reserved; self-signed CA is used today |
 
 ## How it works
 
@@ -183,13 +249,14 @@ The smoke-test fixture under `templates/tests/` requires
 
 ## What's NOT in this chart (yet)
 
-- No mutating admission webhook (auto-injection)
 - No auto-discovery (your monitor must be created in the dashboard;
   copy the ping_key UUID into the chart by hand)
 - No CRD or operator
 - No support for K8s `Job` (one-shot) — CronJob only
 
-These are tracked for V2+.
+Mutating-admission-webhook auto-injection landed in V2 — see
+[Auto-injection](#auto-injection-v2--mutating-admission-webhook) above
+(opt-in via `injector.enabled`). The rest are tracked for later.
 
 ## License
 
