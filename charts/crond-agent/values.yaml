@@ -18,9 +18,8 @@ image:
   # release-agent.yml workflow on every v* tag. Multi-arch (amd64+arm64),
   # FROM scratch (~3MB amd64, ~10MB arm64). Public, anonymously pullable.
   repository: ghcr.io/platops-security/crond-agent
-  # Pinned to the version that adds the `install` subcommand needed by the
-  # init-container copy pattern. Bump with appVersion in Chart.yaml.
-  tag: "0.3.0"
+  # Pinned to the chart's appVersion. Bump with appVersion in Chart.yaml.
+  tag: "0.4.0"
   pullPolicy: IfNotPresent
 
 agent:
