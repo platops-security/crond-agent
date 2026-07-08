@@ -54,7 +54,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # Tools used by .goreleaser.yml's signs/sboms blocks.
+      # Pin cosign to v2.5.2 (the version that signed v0.3.0). cosign v3.x —
+      # the installer's new default after the v4.x action bump — changed
+      # `sign-blob` to require a bundle path and breaks the .goreleaser.yml
+      # `signs` block ("create bundle file: open : no such file or directory").
+      # The .sig/.pem output v2.5.2 produces is what install.sh verifies.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: 'v2.5.2'
       - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
 
       - name: Import GPG key for nfpm package signing
