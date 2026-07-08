@@ -1,0 +1,17 @@
+{{- if .Values.injector.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "crond-agent.injector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "crond-agent.injector.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: 443
+      targetPort: {{ .Values.injector.port }}
+      protocol: TCP
+{{- end }}

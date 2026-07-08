@@ -1,0 +1,27 @@
+{{- if .Values.injector.enabled }}
+{{/*
+  Injection template config for the webhook, rendered from the SAME values the
+  V1 crond-agent.wrap macro reads — so auto-injection produces identical pod
+  specs. JSON scalars (toJson) are valid YAML, parsed by the injector at start.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "crond-agent.injector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+data:
+  injector.yaml: |
+    agentImage: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    apiUrl: {{ .Values.agent.apiUrl }}
+    extraArgs: {{ toJson .Values.agent.extraArgs }}
+    sharedVolumeName: {{ .Values.sharedVolumeName }}
+    sharedMountPath: {{ .Values.sharedMountPath }}
+    pingKeysSecret: {{ include "crond-agent.secretName" . }}
+    captureOutput: {{ .Values.agent.captureOutput }}
+    redactPatterns: {{ toJson .Values.agent.redactPatterns }}
+    containerSecurityContext: {{ toJson .Values.containerSecurityContext }}
+    initResources: {{ toJson .Values.initResources }}
+{{- end }}

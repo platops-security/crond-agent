@@ -1,0 +1,69 @@
+{{- if .Values.injector.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "crond-agent.injector.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "crond-agent.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.injector.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "crond-agent.injector.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "crond-agent.injector.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the Deployment when the injection template config changes.
+        checksum/config: {{ include (print $.Template.BasePath "/injector/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "crond-agent.injector.fullname" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: injector
+          image: {{ include "crond-agent.injector.image" . | quote }}
+          imagePullPolicy: {{ .Values.injector.image.pullPolicy }}
+          args:
+            - "--listen=:{{ .Values.injector.port }}"
+            - "--tls-cert=/tls/tls.crt"
+            - "--tls-key=/tls/tls.key"
+            - "--config=/config/injector.yaml"
+          ports:
+            - name: https
+              containerPort: {{ .Values.injector.port }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: {{ .Values.injector.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: {{ .Values.injector.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.injector.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: config
+              mountPath: /config
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ include "crond-agent.injector.fullname" . }}-tls
+        - name: config
+          configMap:
+            name: {{ include "crond-agent.injector.fullname" . }}
+{{- end }}
