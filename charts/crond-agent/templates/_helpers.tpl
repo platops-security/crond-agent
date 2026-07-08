@@ -60,3 +60,27 @@ wrapper macros (and example CronJobs) reference one source of truth.
 {{- define "crond-agent.secretName" -}}
 {{ include "crond-agent.fullname" . }}-pingkeys
 {{- end -}}
+
+{{/*
+Injector (V2 admission webhook) resource name.
+*/}}
+{{- define "crond-agent.injector.fullname" -}}
+{{ include "crond-agent.fullname" . }}-injector
+{{- end -}}
+
+{{/*
+Injector selector labels — stable across upgrades; distinct from the chart's
+Secret-only labels so the Deployment/Service select just the injector pods.
+*/}}
+{{- define "crond-agent.injector.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "crond-agent.name" . }}-injector
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end -}}
+
+{{/*
+Injector image ref — tag defaults to the chart's appVersion.
+*/}}
+{{- define "crond-agent.injector.image" -}}
+{{- $tag := .Values.injector.image.tag | default .Chart.AppVersion -}}
+{{ .Values.injector.image.repository }}:{{ $tag }}
+{{- end -}}
