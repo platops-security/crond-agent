@@ -19,12 +19,30 @@ builds:
       - -X main.Commit={{.ShortCommit}}
       - -X main.BuildDate={{.Date}}
 
+  # Admission-webhook injector — a container-only, in-cluster component, so it
+  # ships ONLY as an image (see dockers_v2 below). Excluded from archives,
+  # nfpms, and the Homebrew cask via their `ids` filters.
+  - id: injector
+    main: ./cmd/crond-agent-injector
+    binary: crond-agent-injector
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.ShortCommit}}
+      - -X main.BuildDate={{.Date}}
+
 archives:
   - formats: [tar.gz]
+    # Only the agent is a user-installable binary; the injector is image-only.
+    ids: [crond-agent]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 nfpms:
   - package_name: crond-agent
+    ids: [crond-agent]
     vendor: crond.io
     homepage: https://crond.io
     maintainer: crond.io team
@@ -132,6 +150,26 @@ dockers_v2:
     labels:
       org.opencontainers.image.title: crond-agent
       org.opencontainers.image.description: "Cron job monitoring agent for crond.io — wraps cron commands and reports exit codes / duration / output."
+      org.opencontainers.image.licenses: MIT
+      org.opencontainers.image.source: https://github.com/platops-security/crond-agent
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+
+  - id: injector
+    ids: [injector]
+    images:
+      - "ghcr.io/platops-security/crond-agent-injector"
+    dockerfile: Dockerfile.injector
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: crond-agent-injector
+      org.opencontainers.image.description: "Kubernetes mutating admission webhook that auto-injects the crond-agent wrapper into opt-in CronJobs."
       org.opencontainers.image.licenses: MIT
       org.opencontainers.image.source: https://github.com/platops-security/crond-agent
       org.opencontainers.image.version: "{{ .Version }}"
